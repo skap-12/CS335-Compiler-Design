@@ -12,8 +12,6 @@ sys.path.insert(0, "../Submission/")
 sys.path.insert(0, "ChironAST/")
 sys.path.insert(0, "cfg/")
 
-import pickle
-import time
 import turtle
 import argparse
 from interpreter import *
@@ -27,13 +25,13 @@ from sbflSubmission import computeRanks
 import csv
 
 
+from slicing import ChironDDG, dump_ddg, get_def_use
+
 def cleanup():
     pass
 
-
 def stopTurtle():
     turtle.bye()
-
 
 if __name__ == "__main__":
     print(Release)
@@ -53,7 +51,12 @@ if __name__ == "__main__":
         description="Program Analysis Framework for ChironLang Programs."
     )
 
-    # add arguments for parsing command-line arguments
+    cmdparser.add_argument(
+        "-ddg", "--data_dependence",
+        action="store_true",
+        help="Generate and dump the Data Dependence Graph (DDG).",
+    )
+
     cmdparser.add_argument(
         "-p",
         "--ir",
@@ -97,8 +100,6 @@ if __name__ == "__main__":
     )
     cmdparser.add_argument("progfl")
 
-    # passing variable values via command line. E.g.
-    # ./chiron.py -r <program file> --params '{":x" : 10, ":z" : 20, ":w" : 10, ":k" : 2}'
     cmdparser.add_argument(
         "-d",
         "--params",
@@ -119,8 +120,6 @@ if __name__ == "__main__":
         action="store_true",
         help="Run Symbolic Execution on a Chiron program (seed values with '-d' or '--params' flag needed) to generate test cases along all possible paths.",
     )
-    # TODO: add additional arguments for parsing command-line arguments
-
     cmdparser.add_argument(
         "-ai",
         "--abstractInterpretation",
@@ -202,11 +201,8 @@ if __name__ == "__main__":
     if not (type(args.params) is dict):
         raise ValueError("Wrong type for command line arguement '-d' or '--params'.")
 
-    # Instantiate the irHandler
-    # this object is passed around everywhere.
     irHandler = IRHandler(ir)
 
-    # generate IR
     if args.bin:
         ir = irHandler.loadIR(args.progfl)
     else:
@@ -214,10 +210,8 @@ if __name__ == "__main__":
         astgen = astGenPass()
         ir = astgen.visitStart(parseTree)
 
-    # Set the IR of the program.
     irHandler.setIR(ir)
 
-    # generate control_flow_graph from IR statements.
     if args.control_flow:
         cfg = cfgB.buildCFG(ir, "control_flow_graph", True)
         irHandler.setCFG(cfg)
@@ -226,7 +220,26 @@ if __name__ == "__main__":
 
     if args.dump_cfg:
         cfgB.dumpCFG(cfg, "control_flow_graph")
-        # set the cfg of the program.
+
+    # --- DDG logic ---
+    if args.data_dependence:
+        if not args.control_flow:
+            print("[Error] DDG requires a CFG. Please append the '-cfg_gen' flag.")
+            sys.exit(1)
+            
+        print("\n========== Chiron DDG Generator ==========\n")
+        
+        # Instantiate the DDG 
+        ddg = ChironDDG(irHandler)
+        
+        # Create a clean filename based on the input program
+        prog_name = args.progfl.split('/')[-1].replace('.tl', '')
+        filename = f"{prog_name}_ddg"
+        
+        # Dump the graph
+        dump_ddg(ddg, irHandler, filename=filename)
+        print(f"[+] Data Dependence Graph generated: {filename}.png\n")
+    # -----------------------------------------------------------------
 
     if args.ir:
         irHandler.pretty_print(irHandler.ir)
@@ -250,10 +263,6 @@ if __name__ == "__main__":
             raise RuntimeError(
                 "Symbolic Execution needs initial seed values. Specify using '-d' or '--params' flag."
             )
-        """
-        How to run symbolicExecution?
-        # ./chiron.py -t 100 --symbolicExecution example/example2.tl -d '{":dir": 10, ":move": -90}'
-        """
         se.symbolicExecutionMain(
             irHandler, args.params, args.constparams, timeLimit=args.timeout
         )
@@ -263,11 +272,6 @@ if __name__ == "__main__":
             raise RuntimeError(
                 "Fuzzing needs initial seed values. Specify using '-d' or '--params' flag."
             )
-        """
-        How to run fuzzer?
-        # ./chiron.py -t 100 --fuzz example/example1.tl -d '{":x": 5, ":y": 100}'
-        # ./chiron.py -t 100 --fuzz example/example2.tl -d '{":dir": 3, ":move": 5}'
-        """
         fuzzer = Fuzzer(irHandler, args)
         cov, corpus = fuzzer.fuzz(
             timeLimit=args.timeout, generateRandom=args.fuzzer_gen_rand
@@ -277,9 +281,6 @@ if __name__ == "__main__":
             print(f"\tInput {index} : {x.data}")
 
     if args.run:
-        # for stmt,pc in ir:
-        #     print(str(stmt.__class__.__bases__[0].__name__),pc)
-
         inptr = ConcreteInterpreter(irHandler, args)
         terminated = False
         inptr.initProgramContext(args.params)
@@ -289,6 +290,7 @@ if __name__ == "__main__":
                 break
         print("Program Ended.")
         print()
+
         print("Press ESCAPE to exit")
         turtle.listen()
         turtle.onkeypress(stopTurtle, "Escape")
@@ -303,32 +305,12 @@ if __name__ == "__main__":
             raise RuntimeError(
                 "please specify input variable list. Specify using '--inputVarsList'  or '-vars' flag."
             )
-        """
-        How to run SBFL?
-        Consider we have :
-            a correct program = sbfl1.tl
-            corresponding buggy program sbfl1_buggy.tl
-            input variables = :x, :y :z
-            initial test-suite size = 20.
-            Maximum time(in sec) to run a test-case = 10.
-        Since we want to generate optimized test suite using genetic-algorithm,
-        therefore we also need to provide:
-            the intial population size = 100
-            cross-over probabiliy = 1.0
-            mutation probability = 1.0
-            number of times GA to iterate = 100, therefore
-        command : ./chiron.py --SBFL ./example/sbfl1.tl --buggy ./example/sbfl1_buggy.tl \
-            -vars '[":x", ":y", ":z"]' --timeout 1 --ntests 20 --popsize 100 --cxpb 1.0 --mutpb 1.0 --ngen 100 --verbose True
-        Note : if a program doesn't take any input vars them pass argument -vars as '[]'
-        """
 
         print("SBFL...")
-        # generate IR of correct program
         parseTree = getParseTree(args.progfl)
         astgen = astGenPass()
         ir1 = astgen.visitStart(parseTree)
 
-        # generate IR of buggy program
         parseTree = getParseTree(args.buggy)
         astgen = astGenPass()
         ir2 = astgen.visitStart(parseTree)
@@ -336,7 +318,6 @@ if __name__ == "__main__":
         irhandler1 = IRHandler(ir1)
         irhandler2 = IRHandler(ir2)
 
-        # Generate Optimized Test Suite.
         (
             original_testsuite,
             original_test,
@@ -355,13 +336,11 @@ if __name__ == "__main__":
             ngen=args.ngen,
             verbose=args.verbose,
         )
-        # compute ranks of components and write to file
         computeRanks(
             spectrum=spectrum,
             outfilename="{}_componentranks.csv".format(args.buggy.replace(".tl", "")),
         )
 
-        # write all output data.
         with open(
             "{}_tests-original_act-mat.csv".format(args.buggy.replace(".tl", "")), "w"
         ) as file:
